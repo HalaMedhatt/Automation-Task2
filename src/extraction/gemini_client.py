@@ -1,12 +1,14 @@
 import json
 import os
-
+import logging
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
 from src.extraction.prompts import ORDER_EXTRACTION_PROMPT 
 from src.models.order import OrderData
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -23,7 +25,7 @@ def extract_order_from_image(image_path: str) -> OrderData:
 
     
 
-    print("Sending image to Gemini for extraction...")
+    logger.info("Sending image to Gemini for extraction...")
     response = client.models.generate_content(
         model="gemini-2.5-flash",
         contents=[
