@@ -8,7 +8,7 @@ from src.models.order import OrderData
 from src.models.validation import validate_order_totals, DataValidationError
 from src.ui.app import FakturamaApp
 from src.workflows.order_flow import prepare_order
-
+from src.workflows.debtor_flow import resolve_debtor
 
 def main():
     # Initialize logging.
@@ -85,9 +85,28 @@ def main():
         fakturama = FakturamaApp()
 
         # Step 6: Open, prepare and verify the New Order.
-        prepare_order(fakturama, order_data)
+        editor = prepare_order(fakturama, order_data)
 
         logger.info("Section 1 completed successfully.")
+
+        # Step 7: Search, read and match the debtor.
+        matched_debtor = resolve_debtor(
+            fakturama,
+            editor,
+            order_data
+        )
+
+        if matched_debtor is not None:
+            logger.info(
+                "Matched debtor ID: %s",
+                matched_debtor["customer_id"]
+            )
+        else:
+            logger.info(
+                "No exact match. Debtor selection or creation pending."
+            )
+
+        logger.info("Debtor matching stage completed.")
 
         return 0
 
