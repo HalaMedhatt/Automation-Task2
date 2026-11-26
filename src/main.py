@@ -118,11 +118,9 @@ def main():
         logger.error("Pipeline stopped: %s", e)
         return 1
 
-    except Exception as e:
-        logger.error(
-            "Unexpected pipeline error: %s",
-            type(e).__name__
-        )
+
+    except Exception:
+        logger.exception("Unexpected pipeline error.")
         return 1
 
 if __name__ == "__main__":

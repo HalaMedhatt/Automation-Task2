@@ -665,124 +665,94 @@ def read_contact_rows(dialog):
     logger.info("Contact rows extracted: %d", len(rows))
 
     return rows
-def select_matched_contact(dialog, matched_row):
+
+
+def select_filtered_contact(
+    dialog,
+    customer_id,
+    expected_fields
+):
     """
-    Requirement 2.3:
-    Locate the previously matched contact, verify its
-    complete row data, and confirm the selection.
+    Select a contact from the Customer ID search results.
 
-    Reuse the tested reverse navigation without
-    hardcoded screen coordinates.
+    Reuse dynamic row detection and clipboard verification
+    without reverse navigation or hardcoded coordinates.
     """
 
-    target = tuple(
-        matched_row[field]
-        for field in FIELDS
-    )
+    logger.info("Selecting filtered contact: %s", customer_id)
 
-    target_id = matched_row["customer_id"]
+    hwnd = dialog.handle
 
-    logger.info(
-        "Selecting matched debtor: %s",
-        target_id
-    )
-
-    # Reacquire the same selector through its native handle.
-    hwnd = win32gui.FindWindow(
-        None,
-        "Select the address"
-    )
-
-    if not hwnd or hwnd != dialog.handle:
-        raise RuntimeError(
-            "Expected contact selector not found."
-        )
-
-    dialog = Desktop(backend="uia").window(
-        handle=hwnd
-    )
+    # Reacquire the current selector.
+    dialog = Desktop(backend="uia").window(handle=hwnd)
 
     dialog.wrapper_object().set_focus()
 
-    time.sleep(ACTION_DELAY)
-
     grid = locate_grid(dialog)
 
-    grid.set_focus()
+    # Wait for stable search results.
+    state = detect_grid_state(dialog, grid)
 
-    time.sleep(ACTION_DELAY)
+    if state != "NONEMPTY_CANDIDATE":
+        raise RuntimeError(
+            "Customer ID search returned no readable results."
+        )
+
+    # In a single-row result, the last row is also
+    # the first row. No keyboard navigation is needed.
+    click_last_visible_row(dialog, grid)
+
+    # Read the explicitly clicked row only once.
+    current = dict(
+        zip(FIELDS, copy_selected_row(dialog, grid))
+    )
+
+    # Verify the exact Customer ID.
+    if current["customer_id"] != customer_id:
+        raise RuntimeError("Selected Customer ID mismatch.")
+
+    # Verify the expected contact data before confirmation.
+    for field, expected in expected_fields.items():
+
+        if current.get(field) != expected:
+            raise RuntimeError(
+                f"Selected contact mismatch: {field}"
+            )
+
+    logger.info(
+        "Contact verified: %s | ZIP: %s",
+        customer_id,
+        current["zip"]
+    )
+
+    ok = dialog.child_window(
+        title="OK",
+        control_type="Button"
+    ).wrapper_object()
+
+    if not ok.is_visible() or not ok.is_enabled():
+        raise RuntimeError("OK button unavailable.")
 
     verify_focus(dialog, grid)
 
-    # Reuse the successfully tested navigation strategy.
-    press_key(
-        dialog,
-        grid,
-        win32con.VK_END,
-        ctrl=True
-    )
+    # Confirm selection once using UIA.
+    ok.invoke()
 
-    click_last_visible_row(dialog, grid)
+    # Verify closure through Win32 instead of UIA.
+    deadline = time.monotonic() + 10
 
-    previous = None
+    while time.monotonic() < deadline:
 
-    for _ in range(MAX_ROWS):
+        if not win32gui.IsWindow(hwnd):
+            logger.info("Contact selector closed after OK.")
+            return current
 
-        current = copy_selected_row(dialog, grid)
-
-        # Verify the complete row before confirming.
-        if current == target:
-
-            logger.info(
-                "Matched row selection verified: %s",
-                target_id
-            )
-
-            ok = dialog.child_window(
-                title="OK",
-                control_type="Button"
-            ).wrapper_object()
-
-            if not ok.is_visible() or not ok.is_enabled():
-                raise RuntimeError(
-                    "Contact selector OK button unavailable."
-                )
-
-            verify_focus(dialog, grid)
-
-            # Confirm the verified contact.
-            ok.click_input()
-
-            # Verify that the selector has closed.
-            dialog.wait_not("visible", timeout=10)
-
-            logger.info(
-                "Contact selector closed after OK."
-            )
-
-            return
-
-        # Reject changed data for the same customer ID.
-        if current[0] == target_id:
-            raise RuntimeError(
-                "Matched contact data changed."
-            )
-
-        # Stop if navigation reaches its upper boundary.
-        if current == previous:
-            break
-
-        previous = current
-
-        press_key(
-            dialog,
-            grid,
-            win32con.VK_UP
-        )
+        time.sleep(0.1)
 
     raise RuntimeError(
-        f"Could not select matched debtor: {target_id}"
+        "Contact selector did not close after OK."
     )
+
 
 def cancel_contact_selector(dialog):
     """

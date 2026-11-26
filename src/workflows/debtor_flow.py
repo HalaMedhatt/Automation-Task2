@@ -1,3 +1,4 @@
+
 import logging
 
 from pywinauto.controls.win32_controls import EditWrapper
@@ -6,13 +7,26 @@ from src.workflows.order_flow import single_control
 
 from src.ui.grid_reader import (
     read_contact_rows,
-    select_matched_contact,
+    select_filtered_contact,
     cancel_contact_selector,
 )
+
+from src.workflows.debtor_verification import (
+    read_order_identity,
+    verify_order_addresses,
+)
+
 
 logger = logging.getLogger(__name__)
 
 
+MATCH_FIELDS = (
+    "company",
+    "first_name",
+    "last_name",
+    "zip",
+    "city",
+)
 
 
 def open_contact_selector(fakturama, editor):
@@ -62,42 +76,37 @@ def open_contact_selector(fakturama, editor):
     return dialog
 
 
-def search_contact(dialog, company):
-    """Search by the extracted company and verify the input."""
+def search_contact(dialog, query):
+    """Search by company name or customer ID."""
 
-    if not company or not company.strip():
-        raise RuntimeError("Extracted company name is missing.")
+    if not query or not query.strip():
+        raise RuntimeError("Contact search query is missing.")
 
-    logger.info("Searching for company...")
+    logger.info("Searching for contact: %s", query)
 
-    # Locate the unnamed Edit through its Search label.
+    # Locate the search field through its label.
     search_label = dialog.child_window(
         title="Search:",
         control_type="Text"
     ).wrapper_object()
 
     search_field = single_control(
-        search_label.parent().descendants(control_type="Edit")
+        search_label.parent().descendants(
+            control_type="Edit"
+        )
     )
 
-    # Write using UIA and read using the native Win32 Edit.
-    search_field.set_edit_text(company)
+    # Write using UIA and verify through Win32.
+    search_field.set_edit_text(query)
 
     actual = EditWrapper(search_field.handle).window_text()
 
-    if actual != company:
-        raise RuntimeError("Company search verification failed.")
+    if actual != query:
+        raise RuntimeError("Contact search verification failed.")
 
-    logger.info("Company search input verified.")
+    logger.info("Contact search input verified.")
 
     return search_field
-MATCH_FIELDS = (
-    "company",
-    "first_name",
-    "last_name",
-    "zip",
-    "city",
-)
 
 
 def normalize_value(value):
@@ -139,135 +148,74 @@ def is_exact_debtor_match(row, extracted):
 
     return True
 
-def is_conflicting_debtor(row, extracted):
-    """
-    Requirement 2.3:
-    Detect conflicting identities without treating
-    every non-exact match as a conflict.
-
-    This function is called only for non-exact rows.
-    """
-
-    identity_fields = (
-        "company",
-        "first_name",
-        "last_name",
-    )
-
-    # All three identity fields must be present and match.
-    for field in identity_fields:
-
-        actual = normalize_value(row[field])
-        expected = normalize_value(extracted[field])
-
-        if actual is None or expected is None:
-            return False
-
-        if actual.casefold() != expected.casefold():
-            return False
-
-    # The same debtor identity exists, but the row failed
-    # exact matching due to differing or missing values.
-    return True
 
 def find_exact_debtor(rows, extracted):
     """
     Requirement 2.3:
-    Evaluate all collected rows before deciding whether
-    to select, stop for review, or create a debtor.
+    Evaluate all search results using the five exact
+    matching fields.
+
+    Zero matches: create a new debtor.
+    One match: select the existing debtor.
+    Multiple matches: stop for manual review.
     """
 
-    # Validate the required extracted matching fields.
+    # Validate required matching fields.
     for field in MATCH_FIELDS:
-
         if normalize_value(extracted.get(field)) is None:
             raise RuntimeError(
                 f"Missing extracted debtor field: {field}"
             )
 
-    matches = []
-    conflicts = []
-
-    # Evaluate every collected search result.
-    for row in rows:
-
-        if is_exact_debtor_match(row, extracted):
-            matches.append(row)
-
-        elif is_conflicting_debtor(row, extracted):
-            conflicts.append(row)
-
-    # A matching customer ID with different row data
-    # also requires manual review.
-    matched_ids = {
-        row["customer_id"]
-        for row in matches
-    }
-
-    for row in rows:
-
-        if (
-            row["customer_id"] in matched_ids
-            and row not in matches
-            and row not in conflicts
-        ):
-            conflicts.append(row)
+    # Collect only exact matches.
+    matches = [
+        row for row in rows
+        if is_exact_debtor_match(row, extracted)
+    ]
 
     logger.info("Total search results: %d", len(rows))
     logger.info("Exact matches count: %d", len(matches))
-    logger.info("Conflicting rows count: %d", len(conflicts))
 
     logger.info(
         "Matching customer IDs: %s",
         [row["customer_id"] for row in matches]
     )
 
-    logger.info(
-        "Conflicting customer IDs: %s",
-        [row["customer_id"] for row in conflicts]
-    )
-
-    # Multiple exact matches or conflicting identities
-    # must never trigger automatic selection or creation.
-    if len(matches) > 1 or conflicts:
-
+    # Multiple exact matches are ambiguous.
+    if len(matches) > 1:
         raise RuntimeError(
-            "Conflicting or ambiguous debtor results. "
+            "Multiple exact debtor matches. "
             "Manual review required."
         )
 
-    # No exact or conflicting contact was found.
+    # No exact match, including an empty grid.
     if not matches:
         return None
 
-    # Only one exact match and no detected conflicts.
+    # Exactly one matching debtor.
     return matches[0]
 
-def resolve_debtor(fakturama, editor, order_data):
+
+def find_debtor_by_company(dialog, extracted):
     """
-    Execute requirements 2.1, 2.2 and the matching
-    portion of 2.3 in the required order.
+    Requirements 2.2 and 2.3:
+    Search by company, read all results, and return
+    the unique debtor matching the five required fields.
+
+    This function does not select or confirm a contact.
     """
 
-    logger.info("Starting debtor resolution...")
-
-    # 2.1 Open the existing-contact selector.
-    dialog = open_contact_selector(fakturama, editor)
-
-    # Access the extracted debtor data.
-    debtor = order_data.debtor.model_dump()
-
-    # 2.2 Search using the extracted company.
-    company = debtor.get("company")
+    company = extracted["company"]
 
     search_field = search_contact(dialog, company)
 
-    # Wait for stable results and extract all contact rows.
+    # Wait for stable results and read all contact rows.
     rows = read_contact_rows(dialog)
 
     logger.info("Search results collected: %d", len(rows))
 
-    # Verify that the search query has not changed.
+    # Ensure the search query remained unchanged
+    # during row extraction.
     actual_search = EditWrapper(
         search_field.handle
     ).window_text()
@@ -277,8 +225,67 @@ def resolve_debtor(fakturama, editor, order_data):
             "Company search changed during extraction."
         )
 
-    # 2.3 Map extracted debtor data to the visible grid fields.
-    # Use the billing address for debtor identity matching.
+    logger.info("Starting exact debtor matching...")
+
+    return find_exact_debtor(rows, extracted)
+
+
+def select_contact_by_id(dialog, customer_id, expected_fields):
+    """
+    Search and select a known Customer ID.
+
+    Shared by existing debtor selection (2.3)
+    and newly created debtor selection (2.12).
+    """
+
+    logger.info(
+        "Selecting contact by ID: %s",
+        customer_id
+    )
+
+    # Narrow the search to the known customer ID.
+    search_contact(dialog, customer_id)
+
+    # Reuse direct row selection and verification.
+    return select_filtered_contact(
+        dialog,
+        customer_id,
+        expected_fields
+    )
+
+
+def resolve_debtor(fakturama, editor, order_data):
+    """
+    Execute requirements 2.1–2.4.
+
+    Find an existing debtor by company, select the
+    exact match by ID, and verify both Order addresses.
+
+    If no exact match exists, continue to debtor creation.
+    """
+
+    logger.info("Starting debtor resolution...")
+
+    # Preserve the original Order identity before
+    # opening the modal contact selector.
+    order_identity = read_order_identity(editor)
+
+    if order_identity[1] != order_data.external_reference:
+        raise RuntimeError(
+            "Original Order reference does not match source data."
+        )
+
+    logger.info(
+        "Original Order identity captured: %s | %s",
+        *order_identity
+    )
+
+    # 2.1 Open the existing-contact selector.
+    dialog = open_contact_selector(fakturama, editor)
+
+    # Prepare the five required matching fields.
+    debtor = order_data.debtor.model_dump()
+
     billing = debtor["billing_address"]
 
     extracted = {
@@ -289,15 +296,13 @@ def resolve_debtor(fakturama, editor, order_data):
         "city": billing["city"],
     }
 
-    logger.info("Starting exact debtor matching...")
-
-    # Evaluate every result before interacting with the UI.
-    matched_debtor = find_exact_debtor(
-        rows,
+    # 2.2–2.3 Search by company and identify the exact match.
+    matched_debtor = find_debtor_by_company(
+        dialog,
         extracted
     )
 
-    # Branch 1: No exact match and no detected conflicts.
+    # Branch 1: No exact match.
     if matched_debtor is None:
 
         logger.info("Debtor decision: CREATE_NEW")
@@ -310,17 +315,24 @@ def resolve_debtor(fakturama, editor, order_data):
 
         return None
 
-    # Branch 2: Exactly one match without conflicts.
+    # Branch 2: Exactly one match.
     logger.info("Debtor decision: SELECT_EXISTING")
 
-    logger.info(
-        "Exact debtor match found: %s",
-        matched_debtor["customer_id"]
-    )
-
-    select_matched_contact(
+    # Select directly using the verified Customer ID.
+    select_contact_by_id(
         dialog,
+        matched_debtor["customer_id"],
         matched_debtor
     )
+
+    # 2.4 Verify both populated addresses
+    # on the original Order.
+    verify_order_addresses(
+        fakturama,
+        order_data,
+        order_identity
+    )
+
+    logger.info("Requirement 2.4 completed successfully.")
 
     return matched_debtor

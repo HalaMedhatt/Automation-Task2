@@ -15,9 +15,11 @@ The pipeline is built using Python and is divided into three main layers:
    - **AI Safeguard**: Automatically corrects common AI hallucinations (e.g., converting a discount of `0.1` back to `10.0`%).
 
 2. **UI Automation Layer (`src/ui`)**:
-   - **Microsoft UI Automation (UIA)**: Interacts with Fakturama's UI using `pywinauto`.
-   - **No Hardcoded Coordinates**: The system relies on UIA properties (AutomationId, ControlType, Name) and relative relationships to locate fields, buttons, and tabs. 
-   - **Robust Interactions**: Implements explicit waits, retries, and fallback strategies to handle UI rendering delays or dynamic layouts.
+   - **Microsoft UI Automation (UIA):** Discovers and interacts with accessible Fakturama controls using `pywinauto`.
+   - **Native Win32 Integration:** Handles window activation,keyboard events, and focus verification.
+   - **Visual Grounding:** Uses Windows GDI BitBlt to identify grid states and row boundaries.
+   - **Clipboard-based Extraction:** Retrieves structured data from custom controls that do not expose accessible cells.
+   - **No Hardcoded Coordinates:** Resolves controls and calculates interaction positions dynamically from the current UI.
 
 3. **Workflow Layer (`src/workflows`)**:
    - Orchestrates the business logic. For example, the `debtor_flow` attempts an exact match (Company, Name, ZIP, City). If it fails, it triggers the creation flow, saves the new debtor, and re-selects it in the still-open Order. The exact same logic applies to Products and VATs.
@@ -27,16 +29,69 @@ The pipeline is built using Python and is divided into three main layers:
 - **google-genai**: For multimodal LLM extraction from images.
 - **pywinauto**: For Windows Desktop UI Automation.
 - **Microsoft UI Automation (UIA)**: The underlying accessibility framework used by pywinauto for control discovery.
+- **pywin32:** Native Windows API integration for window management, keyboard events, and focus verification.
+- **ctypes (Built-in):** Access to native Windows GDI and User32 APIs for in-memory screen capture and clipboard sequence tracking.
+- **Windows Clipboard:** Deterministic extraction of structured data from custom desktop controls.
 - **pydantic**: For strict data validation and schema enforcement.
 - **python-dotenv**: For securely loading environment variables (e.g., API keys) from `.env` files.
 - **logging** (Built-in): For tracking execution steps and capturing system errors.
 - **pytest**: For unit testing calculation logic and schema validation.
 
+## Technical Challenge: Custom Customer Grid
+
+Fakturama exposes its customer grid as a custom SWT `Pane`
+(`SWT_Window0`), preventing direct access to its rows and cells
+through the tested accessibility interfaces.
+
+### Evaluated Approaches
+
+- **UIA / Win32:** Located the grid but could not access its internal cells.
+- **OCR:** Produced unreliable column separation and recognition errors.
+- **Top-to-Bottom Navigation:** Caused selection loss and Java exceptions
+  during clipboard operations.
+- **Bottom-to-Top Navigation:** Preserved row selection more reliably
+  when reaching the first row in tested cases.
+- **Keyboard-only Selection:** `Ctrl+End` did not consistently establish
+  a valid row selection.
+- **GetPixel:** Pixel-by-pixel inspection introduced significant delays.
+
+### Selected Solution
+
+A deterministic hybrid approach combining:
+
+1. **UIA:** Dynamically locate the customer grid.
+2. **Native Win32 Handle:** Improve window and keyboard focus reliability.
+3. **GDI BitBlt:** Detect empty results, observe grid stability,
+   and identify row boundaries efficiently.
+4. **Dynamic Click:** Explicitly select the last visible row using
+   dynamically calculated coordinates.
+5. **Clipboard Extraction:** Retrieve original tab-separated row data
+   without OCR.
+6. **Reverse Navigation:** Traverse from bottom to top using `Up`
+   to avoid the selection-loss issues observed in forward navigation.
+7. **Exact Matching:** Evaluate all collected rows using the five
+   required non-empty fields before selecting an existing customer,
+   stopping for manual review, or proceeding to creation.
+
+## Technical Challenge: Order Address Rendering
+
+Fakturama displays the debtor's main company name instead of
+the additional name stored in the delivery address.
+
+### Evaluated Approaches
+
+- **Direct Comparison:** Caused a false mismatch.
+
+### Selected Solution
+
+- Use the debtor's main company name for Order address verification.
 
 ## 📁 Project Structure
 ```text
 fakturama-automation/
-├── data/input/                # Directory for source order images (git-ignored)
+├── data/
+│   ├── input/             # Source order images (git-ignored)
+│   └── output/            # Extracted and validated order JSON
 ├── src/
 │   ├── main.py                # Main entry point and pipeline orchestrator
 │   ├── extraction/            # Gemini API client and strict JSON prompts
