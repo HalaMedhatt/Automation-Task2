@@ -16,7 +16,12 @@ from src.workflows.debtor_verification import (
     verify_order_addresses,
 )
 
-
+from src.workflows.debtor_creation import (
+    open_new_debtor_editor,
+    fill_debtor_identity,
+    fill_billing_address,
+    assign_address_roles,
+)
 logger = logging.getLogger(__name__)
 
 
@@ -309,11 +314,38 @@ def resolve_debtor(fakturama, editor, order_data):
 
         cancel_contact_selector(dialog)
 
-        logger.info(
-            "Ready to continue with debtor creation."
+        # 2.5 Open the New Debtor editor.
+        debtor_editor = open_new_debtor_editor(
+            fakturama,
+            order_identity
         )
 
+        logger.info("Open the New Debtor editor completed successfully.")
+
+        # 2.6 Populate debtor identity.
+        customer_id = fill_debtor_identity(
+            debtor_editor,
+            order_data.debtor
+        )
+
+        # 2.7 Populate the Main billing address.
+        fill_billing_address(
+            debtor_editor,
+            order_data.debtor.billing_address
+        )
+        # 2.8 Assign Invoice and Delivery address roles.
+        assign_address_roles(
+            fakturama,
+            debtor_editor,
+            order_data.debtor
+        )
+
+        logger.info("New debtor draft ID: %s", customer_id)
+
+        logger.info("Ready to continue with Miscellaneous.")
+
         return None
+
 
     # Branch 2: Exactly one match.
     logger.info("Debtor decision: SELECT_EXISTING")
@@ -333,6 +365,6 @@ def resolve_debtor(fakturama, editor, order_data):
         order_identity
     )
 
-    logger.info("Requirement 2.4 completed successfully.")
+    logger.info("Verify both populated addresses completed successfully.")
 
     return matched_debtor

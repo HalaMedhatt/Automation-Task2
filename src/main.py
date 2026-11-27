@@ -115,7 +115,12 @@ def main():
         return 1
 
     except RuntimeError as e:
-        logger.error("Pipeline stopped: %s", e)
+        logger.error(
+            "Pipeline stopped: %s: %r",
+            type(e).__name__,
+            e,
+            exc_info=True
+        )
         return 1
 
 

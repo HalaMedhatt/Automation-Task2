@@ -12,6 +12,10 @@ class Address(BaseModel):
     email: Optional[str] = None
     phone: Optional[str] = None
 
+    additional_name: Optional[str] = None
+    address_specification: Optional[str] = None
+    district: Optional[str] = None
+
 class Debtor(BaseModel):
     company: str
     first_name: Optional[str] = None
